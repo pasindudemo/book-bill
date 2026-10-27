@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Bookshop Reports</title>
+<style>
+  body   { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f4; }
+  .box   { background: #fff; border: 1px solid #ccc; padding: 15px; margin-bottom: 15px; }
+  table  { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #999; padding: 5px 8px; text-align: left; }
+  th     { background: #e8e8e8; }
+  .right { text-align: right; }
+  input, button { padding: 5px; margin: 2px; }
+  @media print { .noprint { display: none; } }
+</style>
+</head>
+<body>
+
+<h1>Bookshop Reports</h1>
+<p class="noprint"><a href="index.html">Billing</a> | <b>Reports</b></p>
+
+<!-- Pick a date, then press Show -->
+<div class="box noprint">
+  Date: <input type="date" id="reportDate">
+  <button onclick="showReports()">Show reports</button>
+  <button onclick="window.print()">Print</button>
+</div>
+
+<!-- REPORT 1: daily collection -->
+<div class="box">
+  <h3>Report 1 - Daily collection (<span id="d1"></span>)</h3>
+  <table>
+    <thead>
+      <tr><th>Payment method</th><th class="right">No. of bills</th><th class="right">Amount</th></tr>
+    </thead>
+    <tbody id="collectionBody"></tbody>
+  </table>
+</div>
+
+<!-- REPORT 2: daily inventory -->
+<div class="box">
+  <h3>Report 2 - Inventory (<span id="d2"></span>)</h3>
+  <table>
+    <thead>
+      <tr><th>Title</th><th>Author</th><th class="right">Sold that day</th>
+          <th class="right">Remaining in stock (now)</th></tr>
+    </thead>
+    <tbody id="inventoryBody"></tbody>
+  </table>
+</div>
+
+<script>
+// ---- Helper: make text safe for HTML ----
+function esc(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ---- Helper: 2 decimal places ----
+function money(n) {
+  return (Math.round(n * 100) / 100).toFixed(2);
+}
+
+// ---- Helper: call api.php with GET (for reports we only read data) ----
+function getApi(url, done) {
+  fetch('api.php?' + url)
+    .then(function (r) { return r.json(); })
+    .then(done)
+    .catch(function (e) { alert('Could not reach the server: ' + e); });
+}
+
+// ---- Today's date as YYYY-MM-DD (the format MySQL wants) ----
+function todayText() {
+  var d = new Date();
+  var m = ('0' + (d.getMonth() + 1)).slice(-2);   // month starts at 0 in JavaScript
+  var day = ('0' + d.getDate()).slice(-2);
+  return d.getFullYear() + '-' + m + '-' + day;
+}
+
+// ---- Load both reports for the chosen date ----
+function showReports() {
+  var date = document.getElementById('reportDate').value;
+  if (date == '') { alert('Choose a date'); return; }
+
+  document.getElementById('d1').innerHTML = date;
+  document.getElementById('d2').innerHTML = date;
+
+  // REPORT 1: collection by payment method + grand total
+  getApi('action=report_daily&date=' + date, function (res) {
+    if (res.error) { alert(res.error); return; }
+    var rows = '';
+    var grandTotal = 0;
+    var billCount = 0;
+    for (var i = 0; i < res.rows.length; i++) {
+      var r = res.rows[i];
+      grandTotal += parseFloat(r.amount);
+      billCount += parseInt(r.bill_count, 10);
+      rows += '<tr><td>' + esc(r.payment_method) + '</td>' +
+              '<td class="right">' + r.bill_count + '</td>' +
+              '<td class="right">' + money(parseFloat(r.amount)) + '</td></tr>';
+    }
+    if (res.rows.length == 0) {
+      rows = '<tr><td colspan="3">No sales on this date</td></tr>';
+    } else {
+      rows += '<tr><th>TOTAL</th><th class="right">' + billCount +
+              '</th><th class="right">' + money(grandTotal) + '</th></tr>';
+    }
+    document.getElementById('collectionBody').innerHTML = rows;
+  });
+
+  // REPORT 2: items sold that day and what is left
+  getApi('action=report_inventory&date=' + date, function (res) {
+    if (res.error) { alert(res.error); return; }
+    var rows = '';
+    for (var i = 0; i < res.rows.length; i++) {
+      var r = res.rows[i];
+      rows += '<tr><td>' + esc(r.title) + '</td><td>' + esc(r.author) + '</td>' +
+              '<td class="right">' + r.sold + '</td>' +
+              '<td class="right">' + r.remaining + '</td></tr>';
+    }
+    if (res.rows.length == 0) { rows = '<tr><td colspan="4">No books in inventory</td></tr>'; }
+    document.getElementById('inventoryBody').innerHTML = rows;
+  });
+}
+
+// ---- When the page opens: set today's date and show the reports ----
+document.getElementById('reportDate').value = todayText();
+showReports();
+</script>
+</body>
+</html>

@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Bookshop Billing</title>
+<style>
+  body   { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f4; }
+  h1     { margin-top: 0; }
+  .box   { background: #fff; border: 1px solid #ccc; padding: 15px; margin-bottom: 15px; }
+  table  { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #999; padding: 5px 8px; text-align: left; }
+  th     { background: #e8e8e8; }
+  input, select, button { padding: 5px; margin: 2px; }
+  .right { text-align: right; }
+  .big   { font-size: 20px; font-weight: bold; }
+
+  /* The printable bill is hidden on screen... */
+  #bill  { display: none; font-family: monospace; width: 300px; }
+
+  /* ...and when printing, we hide the whole app and show ONLY the bill */
+  @media print {
+    .noprint { display: none; }
+    #bill    { display: block; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Everything inside this div is hidden when printing -->
+<div class="noprint">
+
+  <h1>Bookshop Billing</h1>
+  <p><b>Billing</b> | <a href="reports.html">Reports</a></p>
+
+  <!-- ========== SECTION 1: ADD BOOKS TO INVENTORY ========== -->
+  <div class="box">
+    <h3>1. Add books to inventory</h3>
+    Title: <input type="text" id="newTitle">
+    Author: <input type="text" id="newAuthor">
+    Price: <input type="number" id="newPrice" min="0" step="0.01" style="width:90px">
+    Qty: <input type="number" id="newQty" min="1" style="width:70px">
+    <button onclick="addBook()">Add Book</button>
+    <p style="font-size:12px;color:#555">
+      Tip: adding the same title + author again just increases the stock.
+    </p>
+  </div>
+
+  <!-- ========== SECTION 2: CREATE A BILL ========== -->
+  <div class="box">
+    <h3>2. New bill</h3>
+
+    Book: <select id="bookSelect"></select>
+    Qty: <input type="number" id="billQty" value="1" min="1" style="width:70px">
+    <button onclick="addToBill()">Add to bill</button>
+
+    <br><br>
+    <table>
+      <thead>
+        <tr><th>Book</th><th class="right">Price</th><th class="right">Qty</th>
+            <th class="right">Total</th><th></th></tr>
+      </thead>
+      <tbody id="billBody"></tbody>
+    </table>
+
+    <p class="big">Bill total: <span id="billTotal">0.00</span></p>
+
+    Payment method:
+    <select id="payMethod" onchange="updateBalance()">
+      <option value="Cash">Cash</option>
+      <option value="Card">Card</option>
+      <option value="Online">Online</option>
+    </select>
+
+    <!-- This row is only shown when the method is Cash -->
+    <span id="cashRow">
+      Cash given: <input type="number" id="cashGiven" min="0" step="0.01"
+                         style="width:110px" oninput="updateBalance()">
+      Balance: <b id="balanceText">0.00</b>
+    </span>
+
+    <br><br>
+    <button onclick="saveBill()" class="big">Save &amp; Print Bill</button>
+    <button onclick="clearBill()">Clear bill</button>
+  </div>
+
+  <!-- ========== SECTION 3: CURRENT STOCK (for reference) ========== -->
+  <div class="box">
+    <h3>Current stock</h3>
+    <table>
+      <thead>
+        <tr><th>Title</th><th>Author</th><th class="right">Price</th><th class="right">In stock</th></tr>
+      </thead>
+      <tbody id="stockBody"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<!-- The bill that gets printed. It is filled in after saving. -->
+<div id="bill"></div>
+
+
+<script>
+// ============================================================
+// GLOBAL VARIABLES
+// ============================================================
+var books = [];       // all books loaded from the database
+var billItems = [];   // books on the bill being made: {book_id, title, price, qty}
+
+
+// ============================================================
+// HELPER: talk to api.php
+//   action = job name, data = object to send (or null), done = function to run with the answer
+// ============================================================
+function callApi(action, data, done) {
+  var options = {};
+  if (data) {                                   // sending data => use POST with JSON
+    options.method = 'POST';
+    options.headers = { 'Content-Type': 'application/json' };
+    options.body = JSON.stringify(data);
+  }
+  fetch('api.php?action=' + action, options)
+    .then(function (r) { return r.json(); })
+    .then(done)
+    .catch(function (e) { alert('Could not reach the server: ' + e); });
+}
+
+// HELPER: make text safe to show inside HTML
+function esc(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// HELPER: show a number with 2 decimals, e.g. 5 -> "5.00"
+function money(n) {
+  return (Math.round(n * 100) / 100).toFixed(2);
+}
+
+
+// ============================================================
+// LOAD BOOKS (fills the dropdown and the stock table)
+// ============================================================
+function loadBooks() {
+  callApi('list_books', null, function (res) {
+    books = res.books;
+
+    var options = '';
+    var rows = '';
+    for (var i = 0; i < books.length; i++) {
+      var b = books[i];
+      options += '<option value="' + b.book_id + '">' + esc(b.title) +
+                 ' (' + money(b.price) + ') - stock ' + b.stock_qty + '</option>';
+      rows += '<tr><td>' + esc(b.title) + '</td><td>' + esc(b.author) + '</td>' +
+              '<td class="right">' + money(b.price) + '</td>' +
+              '<td class="right">' + b.stock_qty + '</td></tr>';
+    }
+    document.getElementById('bookSelect').innerHTML = options;
+    document.getElementById('stockBody').innerHTML = rows;
+  });
+}
+
+
+// ============================================================
+// ADD A BOOK TO THE INVENTORY
+// ============================================================
+function addBook() {
+  var title  = document.getElementById('newTitle').value;
+  var author = document.getElementById('newAuthor').value;
+  var price  = parseFloat(document.getElementById('newPrice').value);
+  var qty    = parseInt(document.getElementById('newQty').value, 10);
+
+  // Simple checks before sending
+  if (title.trim() == '' || isNaN(price) || price <= 0 || isNaN(qty) || qty <= 0) {
+    alert('Please enter title, price and quantity');
+    return;
+  }
+
+  callApi('add_book', { title: title, author: author, price: price, qty: qty }, function (res) {
+    if (res.error) { alert(res.error); return; }
+    alert(res.message);
+    // clear the form
+    document.getElementById('newTitle').value = '';
+    document.getElementById('newAuthor').value = '';
+    document.getElementById('newPrice').value = '';
+    document.getElementById('newQty').value = '';
+    loadBooks();     // refresh the lists
+  });
+}
+
+
+// ============================================================
+// ADD A BOOK TO THE CURRENT BILL
+// ============================================================
+function addToBill() {
+  var id  = parseInt(document.getElementById('bookSelect').value, 10);
+  var qty = parseInt(document.getElementById('billQty').value, 10);
+  if (isNaN(id) || isNaN(qty) || qty <= 0) { alert('Choose a book and quantity'); return; }
+
+  // find the chosen book in our list
+  var book = null;
+  for (var i = 0; i < books.length; i++) {
+    if (parseInt(books[i].book_id, 10) == id) { book = books[i]; }
+  }
+  if (book == null) { return; }
+
+  // if it is already on the bill, just increase the quantity
+  var line = null;
+  for (var j = 0; j < billItems.length; j++) {
+    if (billItems[j].book_id == id) { line = billItems[j]; }
+  }
+  var alreadyOnBill = (line == null) ? 0 : line.qty;
+
+  // do not allow more than we have in stock
+  if (alreadyOnBill + qty > parseInt(book.stock_qty, 10)) {
+    alert('Only ' + book.stock_qty + ' copies in stock');
+    return;
+  }
+
+  if (line == null) {
+    billItems.push({ book_id: id, title: book.title, price: parseFloat(book.price), qty: qty });
+  } else {
+    line.qty += qty;
+  }
+
+  document.getElementById('billQty').value = 1;
+  renderBill();
+}
+
+
+// ============================================================
+// REMOVE ONE LINE FROM THE BILL
+// ============================================================
+function removeLine(index) {
+  billItems.splice(index, 1);   // delete 1 item at position "index"
+  renderBill();
+}
+
+
+// ============================================================
+// DRAW THE BILL TABLE AND CALCULATE THE TOTAL
+// ============================================================
+function renderBill() {
+  var rows = '';
+  var total = 0;
+
+  for (var i = 0; i < billItems.length; i++) {
+    var it = billItems[i];
+    var lineTotal = it.price * it.qty;      // line value = price x quantity
+    total += lineTotal;                     // bill value = sum of all lines
+    rows += '<tr><td>' + esc(it.title) + '</td>' +
+            '<td class="right">' + money(it.price) + '</td>' +
+            '<td class="right">' + it.qty + '</td>' +
+            '<td class="right">' + money(lineTotal) + '</td>' +
+            '<td><button onclick="removeLine(' + i + ')">X</button></td></tr>';
+  }
+
+  document.getElementById('billBody').innerHTML = rows;
+  document.getElementById('billTotal').innerHTML = money(total);
+  updateBalance();
+}
+
+// Returns the current bill total as a number
+function getTotal() {
+  var total = 0;
+  for (var i = 0; i < billItems.length; i++) {
+    total += billItems[i].price * billItems[i].qty;
+  }
+  return Math.round(total * 100) / 100;
+}
+
+
+// ============================================================
+// CASH: show/hide the cash box and calculate the balance
+// ============================================================
+function updateBalance() {
+  var method = document.getElementById('payMethod').value;
+  var cashRow = document.getElementById('cashRow');
+
+  if (method == 'Cash') {
+    cashRow.style.display = 'inline';
+    var cash = parseFloat(document.getElementById('cashGiven').value);
+    if (isNaN(cash)) { cash = 0; }
+    var balance = cash - getTotal();               // balance = cash given - bill total
+    document.getElementById('balanceText').innerHTML = money(balance);
+  } else {
+    cashRow.style.display = 'none';                // card/online: no balance needed
+  }
+}
+
+
+// ============================================================
+// SAVE THE BILL (database) AND PRINT IT
+// ============================================================
+function saveBill() {
+  if (billItems.length == 0) { alert('The bill is empty'); return; }
+
+  var method = document.getElementById('payMethod').value;
+  var cash = parseFloat(document.getElementById('cashGiven').value);
+  if (isNaN(cash)) { cash = 0; }
+
+  if (method == 'Cash' && cash < getTotal()) {
+    alert('Cash given is less than the bill total');
+    return;
+  }
+
+  // Only send book id and quantity; the server looks up prices itself
+  var items = [];
+  for (var i = 0; i < billItems.length; i++) {
+    items.push({ book_id: billItems[i].book_id, qty: billItems[i].qty });
+  }
+
+  callApi('save_bill', { payment_method: method, cash_given: cash, items: items }, function (res) {
+    if (res.error) { alert(res.error); return; }
+
+    printBill(res);     // build + print the paper bill
+    clearBill();        // empty the screen ready for the next customer
+    loadBooks();        // stock numbers have changed
+  });
+}
+
+
+// ============================================================
+// BUILD THE PRINTABLE BILL AND OPEN THE PRINT DIALOG
+// ============================================================
+function printBill(b) {
+  // pad the bill number with zeros: 7 -> "000007"
+  var billNo = ('000000' + b.bill_no).slice(-6);
+
+  var html = '<h3 style="text-align:center;margin:0">MY BOOKSHOP</h3>' +
+             '<div style="text-align:center">Bill No: ' + billNo + '<br>' + esc(b.bill_date) + '</div>' +
+             '<hr><table style="width:100%;border:0">';
+
+  for (var i = 0; i < b.items.length; i++) {
+    var it = b.items[i];
+    html += '<tr><td colspan="2" style="border:0">' + esc(it.title) + '</td></tr>' +
+            '<tr><td style="border:0">' + it.qty + ' x ' + money(it.price) + '</td>' +
+            '<td style="border:0;text-align:right">' + money(it.line_total) + '</td></tr>';
+  }
+
+  html += '</table><hr>' +
+          '<div><b>TOTAL: ' + money(b.total) + '</b></div>' +
+          '<div>Paid by: ' + esc(b.method) + '</div>';
+
+  if (b.method == 'Cash') {
+    html += '<div>Cash: ' + money(b.cash_given) + '</div>' +
+            '<div>Balance: ' + money(b.balance) + '</div>';
+  }
+  html += '<hr><div style="text-align:center">Thank you!</div>';
+
+  document.getElementById('bill').innerHTML = html;
+  window.print();     // opens the browser print dialog
+}
+
+
+// ============================================================
+// CLEAR THE CURRENT BILL
+// ============================================================
+function clearBill() {
+  billItems = [];
+  document.getElementById('cashGiven').value = '';
+  renderBill();
+}
+
+
+// ============================================================
+// RUN WHEN THE PAGE OPENS
+// ============================================================
+loadBooks();
+renderBill();
+</script>
+</body>
+</html>
